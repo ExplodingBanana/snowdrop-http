@@ -6,7 +6,6 @@ import (
 	"strings"
 )
 
-
 var RequestSyntaxError = errors.New("request syntax error")
 
 type IProtocol interface {
@@ -22,14 +21,13 @@ type IProtocol interface {
 }
 
 type HTTPParser struct {
-	_ 					struct{}
-	CurrentState 		ParsingState
-	Protocol 	 		IProtocol
+	_            struct{}
+	CurrentState ParsingState
+	Protocol     IProtocol
 
-	contentLength 		uint
-	tempLine 			[]byte
-	currentSplitter 	byte
-	tempHeader	 		[]byte
+	contentLength   uint
+	tempLine        []byte
+	currentSplitter byte
 }
 
 func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
@@ -47,14 +45,12 @@ func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
 				parser.CurrentState = Body
 				parser.Protocol.OnHeadersComplete()
 
-
 			}
 		}
 	}
 
 	return true, nil
 }
-
 
 func SplitBytes(src, splitBy []byte) [][]byte {
 	if len(src) == 0 {
@@ -66,7 +62,7 @@ func SplitBytes(src, splitBy []byte) [][]byte {
 	var skipIters int
 	lookForward := len(splitBy)
 
-	for index, _ := range src[:len(src)-lookForward] {
+	for index := range src[:len(src)-lookForward] {
 		if skipIters > 0 {
 			skipIters--
 			continue
@@ -116,9 +112,7 @@ func parseHeader(headersBytesString []byte) (key *string, value *string, err err
 			key := string(headersBytesString[:index])
 			value := string(headersBytesString[index+1:])
 
-			if strings.HasPrefix(value, " ") {
-				value = value[1:]
-			}
+			value = strings.TrimPrefix(value, " ")
 
 			return &key, &value, nil
 		}
