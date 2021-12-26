@@ -6,9 +6,11 @@ import (
 	"strings"
 )
 
-var RequestSyntaxError = errors.New("request syntax error")
+var errRequestSyntax = errors.New("request syntax error")
+var errNoSplitter = errors.New("no splitter was found")
 
 type IProtocol interface {
+	OnReady()
 	OnMessageBegin()
 	OnMethod([]byte)
 	OnPath([]byte)
@@ -26,28 +28,42 @@ type HTTPParser struct {
 	Protocol     IProtocol
 
 	contentLength   uint
-	tempLine        []byte
 	currentSplitter byte
 }
 
 func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
 	if parser.CurrentState == MessageCompleted {
+		parser.CurrentState = Ready
 		return true, nil
 	}
+	parser.contentLength = uint(len(data))
 
-	for index, char := range data {
-		if char == parser.currentSplitter {
-			if data[index-1] == parser.currentSplitter {
-				if parser.CurrentState != Headers && parser.CurrentState != Body {
-					return false, RequestSyntaxError
+	parser.Protocol.OnReady()
+
+	var splitted_data = strings.Split(string(data), "\r\n")
+	for index, line := range splitted_data {
+		if index == 0 {
+			parser.Protocol.OnMethod([]byte(strings.Split(line, " ")[0]))
+			continue
+		}
+
+	}
+
+	/*
+		for index, char := range data {
+			if char == parser.currentSplitter {
+				if data[index-1] == parser.currentSplitter {
+					if parser.CurrentState != Headers {
+						return false, errRequestSyntax
+					}
+
+					parser.CurrentState = Body
+					parser.Protocol.OnHeadersComplete()
+
 				}
-
-				parser.CurrentState = Body
-				parser.Protocol.OnHeadersComplete()
-
 			}
 		}
-	}
+	*/
 
 	return true, nil
 }
@@ -118,5 +134,5 @@ func parseHeader(headersBytesString []byte) (key *string, value *string, err err
 		}
 	}
 
-	return nil, nil, errors.New("no splitter was found")
+	return nil, nil, errNoSplitter
 }

@@ -1,10 +1,10 @@
 package httpparser
 
-
 type ParsingState uint8
 
 const (
-	Method ParsingState = iota + 1
+	Ready ParsingState = iota + 1
+	Method
 	Path
 	Protocol
 	Headers
