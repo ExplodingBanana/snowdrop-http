@@ -28,25 +28,47 @@ type HTTPParser struct {
 	Protocol     IProtocol
 
 	contentLength   uint
-	currentSplitter byte
+	currentSplitter []byte
 }
 
 func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
 	if parser.CurrentState == MessageCompleted {
 		parser.CurrentState = Ready
+		parser.Protocol.OnReady()
 		return true, nil
 	}
 	parser.contentLength = uint(len(data))
+	parser.currentSplitter = []byte(CLRF)
 
-	parser.Protocol.OnReady()
+	headers := map[string]string{}
 
-	var splitted_data = strings.Split(string(data), "\r\n")
+	parser.Protocol.OnMessageBegin()
+
+	var splitted_data = bytes.Split(data, parser.currentSplitter)
 	for index, line := range splitted_data {
 		if index == 0 {
-			parser.Protocol.OnMethod([]byte(strings.Split(line, " ")[0]))
+			var splitted_line = bytes.Split(line, []byte(" "))
+			parser.Protocol.OnMethod(splitted_line[0])
+			parser.Protocol.OnPath(splitted_line[1])
+			parser.Protocol.OnMethod(splitted_line[2])
 			continue
 		}
-
+		if parser.CurrentState == Headers {
+			if bytes.Equal(line, parser.currentSplitter) {
+				parser.CurrentState = Body
+				continue
+			}
+			key, value, _ := parseHeader(line)
+			parser.Protocol.OnHeader(*key, *value)
+			headers[*key] = *value
+			continue
+		}
+		if bytes.Equal(line, parser.currentSplitter) {
+			return false, errRequestSyntax
+		}
+		if bytes.Equal(line, parser.currentSplitter) {
+			parser.CurrentState = Body
+		}
 	}
 
 	/*
@@ -105,11 +127,11 @@ func SplitBytes(src, splitBy []byte) [][]byte {
 	return splited
 }
 
+/*
 func parseHeaders(rawHeaders []byte) (parsedHeaders map[string]string, err error) {
 	headers := map[string]string{}
-	CRLF := []byte("\r\n")
 
-	for _, rawHeader := range SplitBytes(rawHeaders, CRLF) {
+	for _, rawHeader := range SplitBytes(rawHeaders, []byte(CLRF)) {
 		key, value, err := parseHeader(rawHeader)
 
 		if err != nil {
@@ -121,6 +143,7 @@ func parseHeaders(rawHeaders []byte) (parsedHeaders map[string]string, err error
 
 	return headers, nil
 }
+*/
 
 func parseHeader(headersBytesString []byte) (key *string, value *string, err error) {
 	for index, char := range headersBytesString {

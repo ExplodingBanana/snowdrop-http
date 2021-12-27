@@ -9,6 +9,7 @@ import (
 
 func check(e error) {
 	if e != nil {
+		print("fok")
 		panic(e)
 	}
 }
@@ -16,8 +17,13 @@ func check(e error) {
 func main() {
 	var parser = httpparser.HTTPParser{CurrentState: httpparser.Ready}
 
-	data, err := os.ReadFile("temp")
+	data, err := os.ReadFile("test")
 	check(err)
-	parser.Feed(data)
+	fmt.Println(data)
 	fmt.Printf("parser: %v\n", parser)
+	completed, err := parser.Feed(data)
+	if completed {
+		return
+	}
+	check(err)
 }

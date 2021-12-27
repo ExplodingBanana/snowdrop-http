@@ -11,3 +11,8 @@ const (
 	Body
 	MessageCompleted
 )
+
+const (
+	CLRF string = "\r\n"
+	LF   string = "\n"
+)
