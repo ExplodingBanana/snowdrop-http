@@ -13,6 +13,6 @@ const (
 )
 
 const (
-	CLRF string = "\r\n"
+	CLRF string = "\r\n" 
 	LF   string = "\n"
 )

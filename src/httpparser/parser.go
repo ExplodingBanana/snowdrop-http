@@ -3,6 +3,7 @@ package httpparser
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"strings"
 )
 
@@ -10,7 +11,6 @@ var errRequestSyntax = errors.New("request syntax error")
 var errNoSplitter = errors.New("no splitter was found")
 
 type IProtocol interface {
-	OnReady()
 	OnMessageBegin()
 	OnMethod([]byte)
 	OnPath([]byte)
@@ -23,69 +23,34 @@ type IProtocol interface {
 }
 
 type HTTPParser struct {
-	_            struct{}
-	CurrentState ParsingState
-	Protocol     IProtocol
-
-	contentLength   uint
-	currentSplitter []byte
+	_               struct{}
+	CurrentState    ParsingState
+	Protocol        IProtocol
+	
+	сurrentSplitter []byte
+	buffer        []byte
+	contentLength uint
 }
 
 func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
-	if parser.CurrentState == MessageCompleted {
+	if parser.сurrentSplitter == nil {
+		return false, errNoSplitter
+	}
+
+	for _, v := range data {
+		if v == 10 {
+			parser.CurrentState +=1
+		}
+	}
+
+	parser.buffer = append(parser.buffer, data...)
+	fmt.Println(parser.buffer)
+
+	switch parser.CurrentState {
+	case MessageCompleted:
 		parser.CurrentState = Ready
-		parser.Protocol.OnReady()
 		return true, nil
 	}
-	parser.contentLength = uint(len(data))
-	parser.currentSplitter = []byte(CLRF)
-
-	headers := map[string]string{}
-
-	parser.Protocol.OnMessageBegin()
-
-	var splitted_data = bytes.Split(data, parser.currentSplitter)
-	for index, line := range splitted_data {
-		if index == 0 {
-			var splitted_line = bytes.Split(line, []byte(" "))
-			parser.Protocol.OnMethod(splitted_line[0])
-			parser.Protocol.OnPath(splitted_line[1])
-			parser.Protocol.OnMethod(splitted_line[2])
-			continue
-		}
-		if parser.CurrentState == Headers {
-			if bytes.Equal(line, parser.currentSplitter) {
-				parser.CurrentState = Body
-				continue
-			}
-			key, value, _ := parseHeader(line)
-			parser.Protocol.OnHeader(*key, *value)
-			headers[*key] = *value
-			continue
-		}
-		if bytes.Equal(line, parser.currentSplitter) {
-			return false, errRequestSyntax
-		}
-		if bytes.Equal(line, parser.currentSplitter) {
-			parser.CurrentState = Body
-		}
-	}
-
-	/*
-		for index, char := range data {
-			if char == parser.currentSplitter {
-				if data[index-1] == parser.currentSplitter {
-					if parser.CurrentState != Headers {
-						return false, errRequestSyntax
-					}
-
-					parser.CurrentState = Body
-					parser.Protocol.OnHeadersComplete()
-
-				}
-			}
-		}
-	*/
 
 	return true, nil
 }
@@ -127,7 +92,6 @@ func SplitBytes(src, splitBy []byte) [][]byte {
 	return splited
 }
 
-/*
 func parseHeaders(rawHeaders []byte) (parsedHeaders map[string]string, err error) {
 	headers := map[string]string{}
 
@@ -143,7 +107,6 @@ func parseHeaders(rawHeaders []byte) (parsedHeaders map[string]string, err error
 
 	return headers, nil
 }
-*/
 
 func parseHeader(headersBytesString []byte) (key *string, value *string, err error) {
 	for index, char := range headersBytesString {
