@@ -1,14 +1,25 @@
 package httpparser
 
 import (
-	"bytes"
 	"errors"
-	"fmt"
+	"strconv"
 	"strings"
 )
 
-var errRequestSyntax = errors.New("request syntax error")
-var errNoSplitter = errors.New("no splitter was found")
+
+var RequestSyntaxError = errors.New("request syntax error")
+var InvalidContentLengthValue = errors.New("invalid value for content-length header")
+var NoSplitterWasFound = errors.New("no splitter was found")
+
+var splittersTable = map[ParsingState]byte{
+	Method: ' ',
+	Path: ' ',
+	Protocol: '\n',
+	Headers: '\n',
+	Body: '\n',
+}
+
+const MaxBufLen = 65535
 
 type IProtocol interface {
 	OnMessageBegin()
@@ -22,103 +33,173 @@ type IProtocol interface {
 	OnMessageComplete()
 }
 
-type HTTPParser struct {
-	_               struct{}
-	CurrentState    ParsingState
-	Protocol        IProtocol
-	
-	сurrentSplitter []byte
-	buffer        []byte
-	contentLength uint
+type HTTPRequestParser struct {
+	protocol 	 		IProtocol
+
+	splitterState 		ParsingState
+	currentState 		ParsingState
+	currentSplitter 	byte
+
+	contentLength 		int64
+	bodyBytesReceived 	int64
+	tempBuf 			[]byte
 }
 
-func (parser *HTTPParser) Feed(data []byte) (completed bool, err error) {
-	if parser.сurrentSplitter == nil {
-		return false, errNoSplitter
+func NewHTTPRequestParser(protocol IProtocol) *HTTPRequestParser {
+	parser := HTTPRequestParser{
+		protocol: protocol,
+		splitterState: Nothing,
+		currentState: Method,
+		currentSplitter: ' ',
+		tempBuf: make([]byte, 0, MaxBufLen),
 	}
+	protocol.OnMessageBegin()
 
-	for _, v := range data {
-		if v == 10 {
-			parser.CurrentState +=1
-		}
-	}
+	return &parser
+}
 
-	parser.buffer = append(parser.buffer, data...)
-	fmt.Println(parser.buffer)
+func (parser *HTTPRequestParser) Reuse(protocol IProtocol) {
+	parser.protocol = protocol
+	parser.splitterState = Nothing
+	parser.currentState = Method
+	parser.currentSplitter = ' '
+	parser.contentLength = 0
+	parser.bodyBytesReceived = 0
+	// tempBuf must be already empty as it is empty while headers are completely parsed
+	protocol.OnMessageBegin()
+}
 
-	switch parser.CurrentState {
-	case MessageCompleted:
-		parser.CurrentState = Ready
+func (parser *HTTPRequestParser) GetState() ParsingState {
+	return parser.currentState
+}
+
+func (parser *HTTPRequestParser) Feed(data []byte) (completed bool, requestError error) {
+	if parser.currentState == MessageCompleted {
 		return true, nil
+	} else if parser.currentState == Body {
+		done := parser.parseBodyPart(data)
+
+		return done, nil
 	}
 
-	return true, nil
-}
-
-func SplitBytes(src, splitBy []byte) [][]byte {
-	if len(src) == 0 {
-		return [][]byte{}
-	}
-
-	var splited [][]byte
-	var afterPrevSplitBy uint
-	var skipIters int
-	lookForward := len(splitBy)
-
-	for index := range src[:len(src)-lookForward] {
-		if skipIters > 0 {
-			skipIters--
+	for index, char := range data {
+		if char == '\r' {
+			// possibly security issue, but the most convenient
+			// solution for parsing http
 			continue
 		}
 
-		if bytes.Equal(src[index:index+lookForward], splitBy) {
-			splited = append(splited, src[afterPrevSplitBy:index])
-			afterPrevSplitBy = uint(index + lookForward)
-			skipIters = lookForward
+		if char != parser.currentSplitter {
+			parser.tempBuf = append(parser.tempBuf, char)
+
+			if parser.splitterState != Nothing {
+				parser.splitterState = Nothing
+			}
+		} else {
+			if char == '\n' && parser.splitterState == ReceivedLF {
+				if parser.currentState != Headers {
+					return true, RequestSyntaxError
+				}
+
+				parser.protocol.OnHeadersComplete()
+				parser.currentState = Body
+
+				if index + 1 < len(data) {
+					done := parser.parseBodyPart(data[index+1:])
+
+					return done, nil
+				}
+
+				return false, nil
+			} else if parser.currentState == Headers {
+				if err := parser.pushHeaderFromBuf(); err != nil {
+					return true, err
+				}
+			} else {
+				// warning: this potentially may cause a shit, as
+				// sometimes may go po pizde as there is no default case,
+				// but currently there are more priority tasks
+				switch parser.currentState {
+				case Method: parser.protocol.OnMethod(parser.tempBuf)
+				case Path: parser.protocol.OnPath(parser.tempBuf)
+				case Protocol:
+					parser.protocol.OnProtocol(parser.tempBuf)
+					parser.protocol.OnHeadersBegin()
+				}
+
+				parser.incState()
+				parser.tempBuf = nil
+			}
+
+			if char == '\n' {
+				parser.splitterState = ReceivedLF
+			}
 		}
 	}
 
-	if len(splited) == 0 {
-		splited = append(splited, src)
-	} else if bytes.HasSuffix(src, splitBy) {
-		// if source ends with splitter, we must add pending
-		// shit without counting splitter in the end
-		splited = append(splited, src[afterPrevSplitBy:len(src)-lookForward])
-	} else {
-		// or add pending shit, but with counting everything in the end
-		splited = append(splited, src[afterPrevSplitBy:])
-	}
-
-	return splited
+	return false, nil
 }
 
-func parseHeaders(rawHeaders []byte) (parsedHeaders map[string]string, err error) {
-	headers := map[string]string{}
+func (parser *HTTPRequestParser) incState() {
+	parser.currentState++  // dirty trick, but we're not about clean code here
+	parser.currentSplitter = splittersTable[parser.currentState]
+}
 
-	for _, rawHeader := range SplitBytes(rawHeaders, []byte(CLRF)) {
-		key, value, err := parseHeader(rawHeader)
+func (parser *HTTPRequestParser) parseBodyPart(data []byte) (completed bool) {
+	if parser.contentLength == 0 {
+		parser.currentState = MessageCompleted
+		parser.protocol.OnMessageComplete()
+
+		return true
+	}
+
+	if int64(len(data)) >= parser.contentLength - parser.bodyBytesReceived {
+		parser.protocol.OnBody(data[:parser.contentLength - parser.bodyBytesReceived])
+		parser.protocol.OnMessageComplete()
+		parser.currentState = MessageCompleted
+		parser.bodyBytesReceived = parser.contentLength
+
+		return true
+	} else {
+		parser.protocol.OnBody(data)
+		parser.bodyBytesReceived += int64(len(data))
+
+		return false
+	}
+}
+
+func (parser *HTTPRequestParser) pushHeaderFromBuf() (ok error) {
+	key, value, err := parseHeader(parser.tempBuf)
+
+	if err != nil {
+		return err
+	}
+
+	parser.protocol.OnHeader(key, value)
+	parser.tempBuf = nil
+
+	if strings.ToLower(key) == "content-length" {
+		contentLength, err := strconv.ParseInt(value, 10, 0)
 
 		if err != nil {
-			return nil, err
+			return InvalidContentLengthValue
 		}
 
-		headers[*key] = *value
+		parser.contentLength = contentLength
 	}
 
-	return headers, nil
+	return nil
 }
 
-func parseHeader(headersBytesString []byte) (key *string, value *string, err error) {
+func parseHeader(headersBytesString []byte) (key, value string, err error) {
 	for index, char := range headersBytesString {
 		if char == ':' {
 			key := string(headersBytesString[:index])
-			value := string(headersBytesString[index+1:])
+			value := strings.TrimPrefix(string(headersBytesString[index+1:]), " ")
 
-			value = strings.TrimPrefix(value, " ")
-
-			return &key, &value, nil
+			return key, value, nil
 		}
 	}
 
-	return nil, nil, errNoSplitter
+	return "", "", NoSplitterWasFound
 }
